@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="sr-Latn"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Provera kalkulatora</title>
+<style>
+:root{--bg:#171a14;--panel:#20241c;--line:#353b2d;--ink:#e7eadc;--mute:#a2a993;--brass:#e0ac4a;--good:#7fcf86;--bad:#f08a7e;--warn:#e9c46a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:640px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:24px;margin:0 0 4px}
+.eyebrow{color:var(--brass);font-size:13px;letter-spacing:.08em;text-transform:uppercase}
+p{margin:8px 0}
+.hint{color:var(--mute);font-size:14px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:14px}
+label{display:block;font-weight:600;font-size:14px;margin:10px 0 4px}
+input{width:100%;font:inherit;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.btn{display:block;width:100%;margin-top:14px;padding:12px;border:0;border-radius:8px;background:var(--brass);color:#1b1a12;font:inherit;font-weight:700}
+.btn.ghost{background:transparent;color:var(--brass);border:1px solid var(--brass)}
+.btn:disabled{opacity:.5}
+#status{min-height:1.4em}
+.row{border-top:1px solid var(--line);padding:12px 0}
+.row:first-child{border-top:0;padding-top:0}
+.row h3{font-size:16px;margin:0 0 6px;display:flex;gap:8px;align-items:center}
+.tag{font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;white-space:nowrap}
+.ok{background:rgba(127,207,134,.15);color:var(--good)}
+.no{background:rgba(240,138,126,.15);color:var(--bad)}
+.unk{background:rgba(233,196,106,.15);color:var(--warn)}
+.kv{display:flex;justify-content:space-between;gap:12px;font-size:15px;padding:2px 0}
+.kv b{font-variant-numeric:tabular-nums;white-space:nowrap}
+</style></head><body>
+<div class="wrap">
+  <div class="eyebrow">WarEra · Vukovi kalkulator</div>
+  <h1>Provera formula</h1>
+  <p class="hint">Povuče tvoje bitke iz poslednjih 7 dana i poslednje udarce iz aktivnih bitaka, pa uporedi sa onim što kalkulator računa. Ništa ne menja ni u igri ni u kalkulatoru.</p>
+  <div class="panel">
+    <label for="nm">Ime u igri</label><input id="nm" autocomplete="off">
+    <label for="ky">API ključ</label><input id="ky" type="password" autocomplete="off" placeholder="Ako je zapamćen u kalkulatoru, već je upisan">
+    <p class="hint">Ključ se šalje samo na api2.warera.io i ova stranica ga ne pamti.</p>
+    <button id="go" class="btn" type="button">Proveri</button>
+    <p id="status" class="hint" aria-live="polite"></p>
+  </div>
+  <div class="panel" id="res" hidden></div>
+  <button id="cp" class="btn ghost" type="button" hidden>Kopiraj rezultat</button>
+  <p id="cpMsg" class="hint" aria-live="polite"></p>
+</div>
+<script>
+const API="https://api2.warera.io/trpc/";
+const $=id=>document.getElementById(id);
+try{const l=JSON.parse(localStorage.getItem("vk-login"));if(l){$("nm").value=l.n||"";$("ky").value=l.k||""}}catch(e){}
+const slp=ms=>new Promise(r=>setTimeout(r,ms));
+const f=(x,d=0)=>isFinite(x)?Number(x).toLocaleString("sr-Latn",{minimumFractionDigits:d,maximumFractionDigits:d}):"–";
+const med=a=>{const s=a.slice().sort((x,y)=>x-y);return s.length?s[Math.floor(s.length/2)]:NaN};
+let KEY="",authErr=0,TXT="";
+async function api(proc,input,auth){
+  const u=API+proc+(input!==undefined?"?input="+encodeURIComponent(JSON.stringify(input)):"");
+  for(let t=0;t<6;t++){
+    const r=await fetch(u,{headers:auth&&KEY?{"X-API-Key":KEY}:{}});
+    if(r.status===429){const w=1500*2**t;$("status").textContent="WarEra traži pauzu, nastavljam za "+Math.ceil(w/1000)+" s…";await slp(w);continue}
+    if(r.status===401||r.status===403){authErr++;throw new Error("ključ")}
+    if(!r.ok)throw new Error(proc+" "+r.status);
+    return (await r.json()).result.data}
+  throw new Error("WarEra ograničava zahteve, probaj za minut")}
+async function pool(items,n,fn){const out=[];let i=0;await Promise.all(Array.from({length:n},async()=>{while(i<items.length){const k=i++;try{out[k]=await fn(items[k])}catch(e){out[k]=null}}}));return out}
+
+async function check(name){
+  const st=t=>$("status").textContent=t;
+  st("Tražim igrača…");
+  const sr=await api("search.searchAnything",{searchText:name});
+  let user=null;
+  for(const id of (sr.userIds||[]).slice(0,5)){const u=await api("user.getUserLite",{userId:id});if(u.username.toLowerCase()===name.toLowerCase()){user=u;break}}
+  if(!user)throw new Error("Nema igrača "+name);
+  const sk=user.skills;
+  const S={prec:sk.precision.value,health:sk.health.value,hunger:sk.hunger.value,loot:sk.lootChance.value,armor:sk.armor.value,dodge:sk.dodge.value};
+  const eq=await api("inventory.fetchCurrentEquipment",{userId:user._id}).catch(()=>null);
+  const g=(sl,k)=>eq&&eq[sl]&&eq[sl].skills?(eq[sl].skills[k]||0):0;
+  const armor=S.armor+g("chest","armor")+g("pants","armor"),dodge=S.dodge+g("boots","dodge"),prec=Math.min(100,S.prec+g("gloves","precision"));
+  const aE=armor/(armor+40),dE=dodge/(dodge+40),hpHit=Math.round(100*(1-aE))/10*(1-dE);
+
+  st("Učitavam bitke iz poslednjih 7 dana…");
+  const since=new Date(Date.now()-7*864e5).toISOString();let ids=[];const active=[];
+  for(const a of [true,false]){let cur=null;
+    for(let i=0;i<10;i++){const inp={isActive:a,limit:100};if(cur)inp.cursor=cur;const d=await api("battle.getBattles",inp);
+      if(a)active.push(...d.items);
+      ids=ids.concat(d.items.filter(b=>b.createdAt>=since).map(b=>b._id));cur=d.nextCursor;
+      if(!cur||!d.items.length||d.items[d.items.length-1].createdAt<since)break}}
+  ids=[...new Set(ids)];
+  let C={};try{C=JSON.parse(localStorage.getItem("vk-loot-"+user._id))||{}}catch(e){}
+  const need=ids.filter(id=>!(id in C));
+  let done=0;st(`Tvoji udarci po bitkama: 0 od ${need.length} (${ids.length-need.length} iz kalkulatora)…`);
+  authErr=0;
+  const got=await pool(need,3,async id=>{try{return await api("battleLootSummary.getByBattleAndUser",{battleId:id,userId:user._id},true)}catch(e){return null}finally{done++;if(done%10===0)st(`Tvoji udarci po bitkama: ${done} od ${need.length}…`)}});
+  if(need.length&&authErr>=Math.min(3,need.length))throw new Error("WarEra ne prihvata ključ. Proveri da li si upisao ceo ključ.");
+  need.forEach((id,i)=>C[id]=got[i]);
+  const L=ids.map(id=>C[id]).filter(x=>x&&x.hits);
+  const T=L.reduce((t,x)=>({hits:t.hits+x.hits,dmg:t.dmg+(x.totalDmg||0),c1:t.c1+(x.case1Count||0),c2:t.c2+(x.case2Count||0)}),{hits:0,dmg:0,c1:0,c2:0});
+
+  st("Gledam poslednje udarce u aktivnim bitkama…");
+  const G={};
+  for(const b of active){const cr=b.currentRound||{};for(const sd of ["attacker","defender"])for(const h of ((cr[sd]||{}).lastHits||[])){
+    if(!h||!h.weapon||!(h.damages>0||h.isMissed))continue;
+    const k=[b._id,h.user,h.weapon.code,(h.weapon.skills||{}).attack,JSON.stringify(h.ammo||null)].join("|");
+    (G[k]=G[k]||{user:h.user,w:h.weapon,eqs:h.equipments||[],n:[],m:[],c:[]})[h.isMissed?"m":h.isCriticalHit?"c":"n"].push(h.damages)}}
+  const missR=[],critR=[],critExp=[],want=[];
+  for(const x of Object.values(G)){if(!x.n.length)continue;const n=med(x.n);
+    if(x.m.length)missR.push(med(x.m)/n);
+    if(x.c.length&&want.length<15)want.push({x,ratio:med(x.c)/n})}
+  const us=await pool([...new Set(want.map(w=>w.x.user))],3,id=>api("user.getUserLite",{userId:id}));
+  const UM={};us.forEach(u=>{if(u)UM[u._id]=u});
+  for(const{x,ratio}of want){const u=UM[x.user];if(!u)continue;const s=u.skills;
+    const helm=(x.eqs.find(e=>/^helmet/.test(e.code||""))||{}).skills||{};
+    let cc=s.criticalChance.value+((x.w.skills||{}).criticalChance||0),cd=s.criticalDamages.value+(helm.criticalDamages||0);
+    if(cc>100)cd+=(cc-100)*4;
+    critR.push(ratio);critExp.push(1+cd/100)}
+
+  const meals=S.hunger+Math.floor(S.hunger*0.8),food=meals*S.health*0.20;
+  const calcMax=(S.health*3.4+food)/hpHit,fixMax=(S.health*2.4+food)/hpHit,real=T.hits/7;
+  const landed=T.hits*prec/100,e1=landed*S.loot/100,e2=landed*S.loot/1e4;
+  const mR=med(missR),cR=med(critR),cE=med(critExp);
+  return{user:user.username,armor,dodge,prec,hpHit,loot:S.loot,battles:L.length,real,calcMax,fixMax,T,e1,e1all:T.hits*S.loot/100,e2,mR,mN:missR.length,cR,cE,cN:critR.length};
+}
+
+function verdicts(r){
+  const V=[];
+  V.push({t:"Udarci dnevno (health)",
+    tag:r.real>r.fixMax*1.05?["no","kalkulator je u pravu"]:r.real>0?["unk","ne pobija ispravku"]:["unk","nema bitaka"],
+    kv:[["Tvoj prosek, 7 dana",f(r.real)],["Najviše po kalkulatoru",f(r.calcMax)],["Najviše po ispravci",f(r.fixMax)]],
+    note:"Računato uz ribu, najjaču hranu. Ako nisi pucao svaki dan, prosek je normalno niži od oba broja. Samo prosek veći od ispravke bi značio da kalkulator dobro broji health."});
+  const enough=r.e1>=20,ratio=r.e1>0?r.T.c1/r.e1:NaN;
+  V.push({t:"Obični case-ovi",
+    tag:!enough?["unk","premalo udaraca"]:Math.abs(ratio-1)<=0.25?["ok","slaže se"]:["no","ne slaže se"],
+    kv:[["Stvarno palo",f(r.T.c1)],[`Po kalkulatoru (pogođeni × ${r.loot}%)`,f(r.e1,1)],["Da padaju na svaki udarac",f(r.e1all,1)]],
+    note:r.prec>=100?"Precision ti je 100%, pa se pogođeni i svi udarci ne razlikuju.":"Ako je stvaran broj bliži donjem redu, case-ovi padaju i na promašaje."});
+  V.push({t:"Elite case-ovi",tag:["unk","malo podataka"],
+    kv:[["Stvarno palo",f(r.T.c2)],["Po kalkulatoru (loot % / 100)",f(r.e2,2)]],
+    note:"Elite pada retko, pa je za nedelju dana ovo samo okvirno."});
+  V.push({t:"Promašaj",
+    tag:!r.mN?["unk","nema podataka"]:Math.abs(r.mR-0.5)<=0.05?["ok","pola štete, tačno"]:["no","nije pola štete"],
+    kv:[["Promašaj / običan udarac",r.mN?f(r.mR,2):"–"],["Kalkulator računa","0,50"],["Grupa udaraca",f(r.mN)]],
+    note:"Isti igrač, isto oružje i municija u istoj bitki, iz poslednjih udaraca u aktivnim bitkama."});
+  V.push({t:"Crit šteta",
+    tag:!r.cN?["unk","nema podataka"]:Math.abs(r.cR/r.cE-1)<=0.05?["ok","slaže se"]:["no","ne slaže se"],
+    kv:[["Crit / običan udarac, stvarno",r.cN?f(r.cR,2):"–"],["Po kalkulatoru",r.cN?f(r.cE,2):"–"],["Igrača",f(r.cN)]],
+    note:"Kalkulator računa crit kao 1 + crit šteta / 100, sa šlemom i viškom crit šanse."});
+  return V}
+
+function show(r){
+  const V=verdicts(r);
+  $("res").innerHTML=`<p class="hint" style="margin-top:0">${r.user}: ${f(r.battles)} bitaka · armor ${f(r.armor)}, dodge ${f(r.dodge)}, precision ${f(r.prec)}% · ${f(r.hpHit,2)} health po udarcu</p>`+
+    V.map(v=>`<div class="row"><h3>${v.t} <span class="tag ${v.tag[0]}">${v.tag[1]}</span></h3>${v.kv.map(([k,x])=>`<div class="kv"><span>${k}</span><b>${x}</b></div>`).join("")}<p class="hint">${v.note}</p></div>`).join("");
+  TXT=`Provera kalkulatora · ${r.user} · ${f(r.battles)} bitaka · ${f(r.hpHit,2)} health po udarcu\n`+
+    V.map(v=>`${v.t}: ${v.tag[1]} (${v.kv.map(([k,x])=>k+" "+x).join(", ")})`).join("\n");
+  $("res").hidden=false;$("cp").hidden=false}
+
+$("go").addEventListener("click",async()=>{
+  const name=$("nm").value.trim();KEY=$("ky").value.trim();$("cpMsg").textContent="";
+  if(!name){$("status").textContent="Upiši ime iz igre.";return}
+  if(!KEY){$("status").textContent="Upiši API ključ. Bez njega ne vidim tvoje bitke.";return}
+  $("go").disabled=true;$("res").hidden=true;$("cp").hidden=true;
+  try{const r=await check(name);show(r);$("status").textContent="Gotovo."}
+  catch(e){$("status").textContent=e.message||"Nešto nije u redu, probaj ponovo."}
+  finally{$("go").disabled=false}});
+
+$("cp").addEventListener("click",async()=>{let ok=false;
+  try{await navigator.clipboard.writeText(TXT);ok=true}catch(e){}
+  if(!ok){try{const t=document.createElement("textarea");t.value=TXT;document.body.appendChild(t);t.select();ok=document.execCommand("copy");t.remove()}catch(e){}}
+  $("cpMsg").textContent=ok?"Kopirano. Nalepi mi rezultat u čet.":"Telefon nije dozvolio kopiranje. Pošalji sliku ekrana."});
+</script>
+</body></html>
